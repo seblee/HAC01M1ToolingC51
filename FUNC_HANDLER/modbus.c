@@ -28,8 +28,11 @@ void Modbus_Read_Register03H(modbosCmd_t *CmdNow);
 void modbus_process_command(u8 *pstr, u16 strlen);
 #endif
 #ifdef MODBUS_DEVICE
+void Modbus_Device_03H(uint8_t *rx);
+void Modbus_Device_06H(uint8_t *rx);
 void Modbus_Device_10H(uint8_t *rx);
 #endif
+void MODBUS_SendWithCRC(uint8_t *_pBuf, uint8_t _ucLen);
 
 u8 modbus_rx_count = 0;                 //接收到的字符串的长度
 u8 modbus_rx_flag  = 0;                 //接收到的字符串的标志，为1表示有收到数据
@@ -81,8 +84,12 @@ void modbus_process_command(u8 *pstr, u16 strlen)
         // printf("%02X ", (u16)(*(pstr + num)));
     }
     // printf(",length:%d\r\n", strlen);
-
+#ifdef MODBUS_MASTER
+    if (strlen < 5)
+#endif
+#ifdef MODBUS_DEVICE
     if (strlen < 8)
+#endif
     {
         return;
     }
@@ -149,8 +156,23 @@ void modbus_process_command(u8 *pstr, u16 strlen)
 #endif
 #ifdef MODBUS_DEVICE
                 case BUS_FUN_03H:  //读寄存器地址命令
+
+                    crc_data = crc16table(pstr + num, 8);
+                    if (crc_data != 0)  // CRC
+                    {
+                        break;
+                    }
+                    Modbus_Device_03H(pstr + num);
+                    num += 8;
                     break;
                 case BUS_FUN_06H:  //写寄存器地址命令
+                    crc_data = crc16table(pstr + num, 8);
+                    if (crc_data != 0)  // CRC
+                    {
+                        break;
+                    }
+                    Modbus_Device_06H(pstr + num);
+                    num += 8;
                     break;
                 case BUS_FUN_10H:  //连续写寄存器地址命令
                     len = *(pstr + num + 6);
@@ -164,8 +186,8 @@ void modbus_process_command(u8 *pstr, u16 strlen)
                     {
                         break;
                     }
-                    Modbus_Device_Ack10H(pstr + num);
-                    num += len + 9;
+                    Modbus_Device_10H(pstr + num);
+                    num += (len + 9);
                     break;
 #endif
                 default:
@@ -341,24 +363,69 @@ void Modbus_Write_Register10H(modbosCmd_t *CmdNow)
 #endif
 
 #ifdef MODBUS_DEVICE
+/**
+ * @brief
+ * @param  rx  My Param doc
+ */
+void Modbus_Device_03H(uint8_t *rx)
+{
+    u8 modbus_tx_buf[64];
+    u8 len = 0;
+
+    modbus_tx_buf[len++] = DEVICE_ID;
+    modbus_tx_buf[len++] = BUS_FUN_03H;
+    modbus_tx_buf[len++] = ((*(rx + 4) << 8) | *(rx + 5)) * 2;
+    ReadDGUS((*(rx + 2) << 8) | *(rx + 3), &modbus_tx_buf[len], modbus_tx_buf[len - 1]);
+    len += modbus_tx_buf[len - 1];
+
+    MODBUS_SendWithCRC(modbus_tx_buf, len);
+}
+
+/**
+ * @brief
+ * @param  rx  My Param doc
+ */
+void Modbus_Device_06H(uint8_t *rx)
+{
+    u8 modbus_tx_buf[20];
+    WriteDGUS((*(rx + 2) << 8) | *(rx + 3), (rx + 4), 2);
+    memcpy(modbus_tx_buf, rx, 6);
+    MODBUS_SendWithCRC(modbus_tx_buf, 6);
+}
+
+/**
+ * @brief
+ * @param  rx  My Param doc
+ */
 void Modbus_Device_10H(uint8_t *rx)
 {
-    u16 crc_data;
     u8 modbus_tx_buf[20];
-    u8 len = 6;
-    WriteDGUS((*(rx + 2) << 8) | *(rx + 3), (rx + 7), len);
-    memcpy(rx, modbus_tx_buf, 6);
-    crc_data             = crc16table(modbus_tx_buf, len);
-    modbus_tx_buf[len++] = (crc_data >> 8) & 0xFF;
-    modbus_tx_buf[len++] = crc_data & 0xFF;
-#ifdef MDO_UART2
-    Uart2SendStr(modbus_tx_buf, len);
-#endif
-#ifdef MDO_UART5
-    Uart5SendStr(modbus_tx_buf, len);
-#endif
+    uint16_t addr = (*(rx + 2) << 8) | *(rx + 3);
+    uint16_t len  = *(rx + 6);
+    WriteDGUS(addr, (rx + 7), len);
+    memcpy(modbus_tx_buf, rx, 6);
+    MODBUS_SendWithCRC(modbus_tx_buf, 6);
 }
 #endif
+
+/**
+ * @brief
+ */
+void MODBUS_SendWithCRC(uint8_t *_pBuf, uint8_t _ucLen)
+{
+    uint16_t crc;
+
+    crc             = crc16table(_pBuf, _ucLen);
+    _pBuf[_ucLen++] = crc >> 8;
+    _pBuf[_ucLen++] = crc;
+#ifdef MDO_UART2
+    Uart2SendStr(_pBuf, _ucLen);
+#endif
+#ifdef MDO_UART5
+    Uart5SendStr(_pBuf, _ucLen);
+#endif
+}
+
 //清除modbus RX的相关参数
 void Modbus_RX_Reset(void)
 {
